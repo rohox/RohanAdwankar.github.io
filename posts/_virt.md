@@ -2,7 +2,7 @@
 
 Recently I got a new computer so in continuity with my sandbox interest I figured we should take a look at how many sandboxes we can fit into this.
 
-```
+```fastfetch
 rohan@oxroute:~$ fastfetch
                              ....              rohan@oxroute
               .',:clooo:  .:looooo:.           -------------

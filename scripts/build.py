@@ -60,7 +60,10 @@ PAGE_CSS = '''
     article pre { overflow-x: auto; max-width: 100%; }
     article img { max-width: 100%; height: auto; }
     pre code.hljs { border-radius: 6px; padding: 14px 16px; font-size: 13.5px; overflow-x: auto; }
-    article pre code.language-fastfetch { display: block; background: #282c34; color: #abb2bf; border-radius: 6px; padding: 14px 16px; font-size: 13.5px; overflow-x: auto; }
+    /* the fastfetch printout: a terminal look, with the red of a terminal's colour 1 (Ubuntu's orange) and the tighter line height of a terminal so the logo is round */
+    article pre.fastfetch { background: #282c34; color: #abb2bf; border-radius: 6px; padding: 14px 16px; overflow-x: auto; }
+    article pre.fastfetch code { display: block; padding: 0; background: none; font-size: 13.5px; line-height: 1.15; }
+    pre.fastfetch .c31 { color: #e95420; }
     article :not(pre) > code { background: #262626; border: 1px solid #3a3a3a; border-radius: 4px; padding: 0.08em 0.36em; font-size: 0.86em; color: #e7a6a0; }
     body.light article :not(pre) > code { background: #f4f4f4; border-color: #e2e2e2; color: #c0392b; }
     .table-wrap { overflow-x: auto; margin: 24px 0; }
@@ -93,7 +96,7 @@ PAGE_CSS = '''
             .header-controls .theme-switch { margin-left: auto; }
             .mobile-back { display: inline-block; white-space: nowrap; margin-right: 0; }
             /* the fastfetch printout is about 84 monospace characters wide: size it from the screen so it fits without scrolling */
-            article pre code.language-fastfetch { font-size: calc((100vw - 72px) / 51); }
+            article pre.fastfetch code { font-size: calc((100vw - 72px) / 51); }
         }
         </style>
 '''

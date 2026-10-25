@@ -168,7 +168,7 @@ The light tier does something else that no VM does: its cost does not grow with 
 - **Telling the sandbox when a turn ends** lets it release the VM at once, instead of waiting out the idle window. In an earlier rough run that halved the number of resident VMs. It needs a harness that can say when a turn ends, so it is not in the numbers above.
 - **Telling it when a turn starts** so the VM wakes during the model's thinking time. A blind prewarm cost more cpu than it saved, because a third of the sessions never need a VM. It would need a predictor.
 
-## The same tenants on other people's designs
+## How other designs compare
 
 ![Latency added to a call at each design's limit](/img/virt-latency.png)
 

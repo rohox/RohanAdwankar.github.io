@@ -94,13 +94,11 @@ One downside is that now about 1 call in 11 wakes a VM, and a cold boot of a gue
 
 ![64 tenants. Idle VMs are killed, and each tenant's next command waits for a cold boot.](/img/virt-level2.gif)
 
-## Level 3: Snapshots 
+## Level 3: Snapshots
 
-Booting is the expensive, and most boots are doing the same work.
-
-So now we can boot one VM, wait for the agent to come up, pause it, and write out its memory.
-
-Every tenant's VM is then restored from that single file with the memory mapped copy on write, so a VM only holds the pages it has changed.
+Booting is the expensive part, and every boot does the same work.
+So boot one VM, wait for the agent to come up, pause it, and write its memory to a file.
+Every tenant's VM is then restored from that file with the memory mapped copy on write, so a VM only holds the pages it has changed.
 
 ```
 # once: boot a VM, wait for the agent, then
@@ -113,52 +111,38 @@ PUT   /snapshot/load    {"snapshot_path": "pristine.snap",
                          "resume_vm": true}
 ```
 
-Two things have to be true for this to work.
 
-The root drive must be read-only, because restoring over an image another VM has since written corrupts the filesystem (the restored guest's cached ext4 metadata no longer matches the disk).
+This needs a read-only root drive, because restoring over an image another VM has written corrupts the filesystem, and a snapshot taken while the workspace is empty, because the host owns the workspace and pushes it in on every wake.
+The init script also imports Python's standard library before the snapshot, so a wake that runs `python3 -m unittest` costs 161 ms of cpu instead of 530.
+That alone holds 176 tenants at about 27 MiB each instead of 113.
 
-And the snapshot has to be taken *while the workspace is empty*, because the host owns the workspace and pushes it in on every wake.
+A restore takes tens of milliseconds, so Level 2's killing comes back with a much shorter idle window.
+Move the slider to see the trade, using the commands one tenant made in a real run:
 
-One more trick, whatever sits in the guest's page cache when the snapshot is taken is shared by every VM restored from it, so the init script imports Python's common standard library before the snapshot.
-A wake that runs `python3 -m unittest` then costs 161 ms of cpu instead of 530.
+<div class="explain" data-kind="window"></div>
+<script src="/explainers.js" defer></script>
 
-This boost us a ton up to 176 tenants at about 27 MiB each instead of 113.
-
-Since these restore in tens of milliseconds, a VM is cheap enough to restore on demand, so now bring back Level 2's killing: release a VM after a short idle window and restore the shared snapshot on the next command.
 A window of 5 seconds turned out to be best.
-
-The question is what to do with the VM when you release it.
-The naive answer is to snapshot its memory to disk so it can resume exactly.
-That works, and it cost me: at about 400 tenants the machine was writing 11 to 13 GiB of session snapshots and running out of disk bandwidth.
-
-The better answer is that most guests hold nothing worth saving.
-The workspace is on the host and gets pushed back in.
-If the guest also holds nothing outside the workspace and `/tmp`, the VM can simply be killed, and the next wake restores the shared snapshot, with no disk written at all:
-
-Two details made that work.
-`/tmp` is a second synced area, kept on the host while the guest is gone, so a test run that writes scratch files doesn't make the guest look dirty.
-And a guest that really did install something (a `pip install`, say) keeps its snapshot, in two alternating slots so a failed write never destroys the last good one.
+When a VM is released it is killed if the guest holds nothing outside the workspace and `/tmp`, because the workspace lives on the host and is pushed back in on the next wake.
+A guest that really did install something, a `pip install` say, keeps a snapshot in two alternating slots, so a failed write never destroys the last good one.
+Snapshotting every released VM is the naive version, and at about 400 tenants it wrote 11 to 13 GiB and ran out of disk bandwidth.
 
 **640 tenants**, from 176, and the machine now runs out of *cpu* and not memory.
 Resident VMs at the peak are 228, each costing about 8 MiB.
-The tail is where the cost is: a woken call takes a median of 115 ms and the p99 for all calls is 1.3 s, because 640 tenants produced 4,590 wakes in a six minute run.
+The cost is in the tail: a woken call takes a median of 115 ms, and the p99 for all calls is 1.3 s, because 640 tenants produced 4,590 wakes in a six minute run.
 
 ![576 tenants, shown below its limit of 640 because recording the run adds load. VMs come and go as tenants start and stop turns.](/img/virt-level3.gif)
 
-## Level 4: Routing 
+## Level 4: Routing
 
-Thus far we have optimizing by configuring the VM but lets do some out of the box thinking (obligatory[this should be a hyperlink which when clicked plays the budum tiss sound for a pun]) and see how we can offload the neccesity of the VM.
-
-Looking at what the agents are running, 224 of 304 recorded calls (74%) never needed a real comptuer they are the file tools (`read`, `edit`, `write`, `glob`, `grep`), and shell commands like `ls`, `cat` and `sed`.
-
+So far we have only tuned the VM, so lets do some out of the box thinking (obligatory[this should be a hyperlink which when clicked plays the budum tiss sound for a pun]) and avoid the VM.
+224 of the 304 recorded calls (74%) never needed a real computer: they are the file tools (`read`, `edit`, `write`, `glob`, `grep`) and shell commands like `ls`, `cat` and `sed`.
 Only 80 of the 136 shell commands ran code, and 8 of the 26 sessions never needed a VM once.
+This makes sense, because most of what an agent does is read parts of the codebase and its memory files.
 
-Thinking back to how people use agents this makes a lot of sense.
-Even though there are spurts of activity when actually programming which require a VM (eg. browser use, compilation) for a large segement of operations the agent just needs to read parts of their codebase / memory files and retrieve the asnwer.
-
-Therefore if we can selectively route querires ligher sandbox we can satisfy agent requests in then we can increase the percentage of commands which dont require rewaking the VM.
-This routing system was the intuion behind oxroute[add link].
-In this case for the light sandbox I chose [bubblewrap](https://github.com/containers/bubblewrap) plus a seccomp filter, with no VM:
+So the router sends those calls to a lighter sandbox, and only commands that run code, use the network or ask about the machine wake a VM.
+This is the intuition behind oxroute[add link].
+The light sandbox is [bubblewrap](https://github.com/containers/bubblewrap) plus a seccomp filter, with no VM:
 
 ```
 bwrap --unshare-all --unshare-user --disable-userns --cap-drop ALL --seccomp 3 \
@@ -169,27 +153,18 @@ bwrap --unshare-all --unshare-user --disable-userns --cap-drop ALL --seccomp 3 \
       bash -c "$COMMAND"
 ```
 
-The only writable things are the tenant's workspace and a private `/tmp`; there is no network namespace to join and the filter has no socket calls.
-The filter is the Docker default profile's 299 allowed calls, with `clone3` answered "not implemented" and `clone` with any namespace flag refused.
-A command costs about 6 ms, against 2.4 ms bare and 7.5 ms in a warm VM.
-The light tier also does something nice, its cost does not grow with the host process.
-The orchestrator starts each command with `posix_spawn` and not `fork`, because a fork copies the parent's page tables, and with hundreds of tenants the parent is hundreds of megabytes.
-A command costs about 6ms whatever the size of the host process.
 
-This routing approach generates a 100 tenant boost up to 736 tenants.
-This is great but perhaps a smaller boost then you may expect due to the profile of the benchmark workload.
-Compare the two designs at the point where each one stops passing.
-Level 3 (restoring a VM on every command that needs one) handles 640 tenants, who make 19,353 calls in a six minute run and wakes a VM 4,590 times, using 51% of the cpu on average.
-Level 4 (running file commands outside a VM) handles 736 tenants, who make 22,328 calls and wake a VM only 1,777 times, using 43% of the cpu.
-Routing removed most of the wakes.
-But the tenant limit is set by bursts, not the average.
-When many tenants start a turn at the same moment, there are more wakes and Python test runs than the four cpu threads can run at once, so some calls wait their turn, and the p99 passes 1.5 seconds while the machine is half idle.
-The 26% of calls that still need a VM, mostly `python3`, are real work that no design avoids at the peaks, but depending on the profile of the peaking the tenant gains could be seen as more or less.
+Only the tenant's workspace and a private `/tmp` are writable, there is no network, and the filter is the Docker default profile's 299 allowed calls with `clone3` refused and `clone` refused if it asks for a namespace.
+A command costs about 6 ms, against 2.4 ms bare and 7.5 ms in a warm VM.
+The orchestrator starts each command with `posix_spawn` and not `fork`, because a fork copies the parent's page tables and with hundreds of tenants the parent is hundreds of megabytes, so the cost stays about 6 ms whatever the size of the host process.
+
+Routing holds **736 tenants**, 96 more than Level 3, which is less than you might expect.
+At their limits Level 3 handles 640 tenants making 19,353 calls with 4,590 wakes at 51% mean cpu, and Level 4 handles 736 tenants making 22,328 calls with 1,777 wakes at 43%.
+Routing removed most of the wakes, but the limit is set by bursts and not the average: when many tenants start a turn at once there are more wakes and Python test runs than the four cpu threads can run at once, so some calls wait their turn and the p99 passes 1.5 seconds while the machine is half idle.
+The 26% of calls that still need a VM, mostly `python3`, are real work no design avoids at the peaks.
 
 ![736 tenants on a 7 GiB laptop, replayed from real agent sessions at 8x](/img/virt-timelapse.gif)
-
 ![Each step, and what it bought](/img/virt-ladder.png)
-
 ![Latency added to a call at each level's limit](/img/virt-latency.png)
 
 ## Try it yourself
